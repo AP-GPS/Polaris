@@ -9,6 +9,8 @@ build/
 # Local configuration file (sdk path, etc)
 local.properties
 
+*.zip
+
 # Log/OS Files
 *.log
 

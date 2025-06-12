@@ -1,3 +1,0 @@
-# Polaris
-
-Mobile Network Project
