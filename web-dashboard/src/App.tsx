@@ -7,6 +7,7 @@ import Dashboard from "./components/Dashboard";
 import type { JSX } from "@emotion/react/jsx-runtime";
 import Settings from "./components/Settings";
 import Charts from "./components/Charts";
+import Map from "./components/Map";
 
 const ProtectedRoute: React.FC<{ children: JSX.Element }> = ({ children }) => {
   const { token } = useAuth();
@@ -21,6 +22,8 @@ const App: React.FC = () => (
         <Route path="/register" element={<Register />} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         <Route path="/charts" element={<ProtectedRoute><Charts /></ProtectedRoute>} />
+        {/* <Route path="/map" element={<ProtectedRoute><Map /></ProtectedRoute>} /> */}
+        <Route path="/map" element={<Map />} />
         <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Box, Button, Container, TextField, Typography, Alert, Grid } from "@mui/material";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router-dom";
@@ -21,6 +21,7 @@ const Login: React.FC = () => {
     try {
       const response = await publicApi.post("/auth/login", { username, password });
       const { token } = response.data as { token: string };
+      localStorage.setItem("jwt_token", token);
       login(token);
       navigate("/", { replace: true });
     } catch (err: any) {
@@ -57,9 +58,9 @@ const Login: React.FC = () => {
               fullWidth
               variant="contained"
               disabled={loading}
-              sx={{ mt: 2 }}
+              sx={{ mt: 2, direction: 'rtl' }}
             >
-              {loading ? "در حال بررسی..." : "ورود"}
+              {loading ? "در حال بررسی ..." : "ورود"}
             </Button>
           </Box>
         </Box>

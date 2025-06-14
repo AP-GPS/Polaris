@@ -13,7 +13,7 @@ import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router-dom";
 import { privateApi } from "../services/api";
 
-interface Measurement {
+export interface Measurement {
   id: number;
   userId: number;
   timestamp: number;
@@ -196,6 +196,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <Grid width="100vw">
+      <Typography sx={{ textAlign: 'center', display: { xs: 'block', md: 'none' } }} variant="h5">داشبورد پولاریس</Typography>
       <Container maxWidth="lg" sx={{ my: 2 }}>
         <Box
           display="flex"
@@ -224,6 +225,13 @@ const Dashboard: React.FC = () => {
             </Button>
             <Button
               variant="outlined"
+              onClick={() => navigate('/map')}
+              color="inherit"
+            >
+              نقشه
+            </Button>
+            <Button
+              variant="outlined"
               onClick={exportToCSV}
               color="success"
             >
@@ -237,7 +245,7 @@ const Dashboard: React.FC = () => {
               خروجی KML
             </Button>
           </Box>
-          <Typography sx={{ direction: 'rtl' }} variant="h5">داشبورد پولاریس</Typography>
+          <Typography sx={{ direction: 'rtl', display: {xs: 'none', md: 'block'} }} variant="h5">داشبورد پولاریس</Typography>
         </Box>
 
         {error && (
