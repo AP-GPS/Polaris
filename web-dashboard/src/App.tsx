@@ -22,8 +22,7 @@ const App: React.FC = () => (
         <Route path="/register" element={<Register />} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         <Route path="/charts" element={<ProtectedRoute><Charts /></ProtectedRoute>} />
-        {/* <Route path="/map" element={<ProtectedRoute><Map /></ProtectedRoute>} /> */}
-        <Route path="/map" element={<Map />} />
+        <Route path="/map" element={<ProtectedRoute><Map /></ProtectedRoute>} />
         <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

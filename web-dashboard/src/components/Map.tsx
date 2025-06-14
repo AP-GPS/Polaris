@@ -1,11 +1,5 @@
 import { Box, Grid } from "@mui/material";
-import ColoredMap, { type Point } from "./ColoredMap";
-
-// const points: Point[] = [
-//     { coords: [35.6892, 51.3890], color: 'red' },
-//     { coords: [34.6399, 50.8759], color: 'blue' },
-//     { coords: [31.8974, 54.3569], color: 'green' },
-// ];
+import ColoredMap from "./ColoredMap";
 
 const Map = () => {
     return (
