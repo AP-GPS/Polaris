@@ -10,28 +10,59 @@ import com.google.gson.Gson
  * Maps a local MonitoringSnapshot entity to the API request body.
  */
 fun mapSnapshotToApiRequest(snapshot: MonitoringSnapshot): PolarisApiRequest {
-    // Parse signal and cell info to extract relevant data
+    // Parse primary LTE cell lines
+    val primaryCellLines = snapshot.cellInfo.lines()
+        .filter { it.contains(":") }
+        .map { it.trim() }
+
+    fun getIntValue(key: String): Int? =
+        primaryCellLines.find { it.startsWith(key, ignoreCase = true) }
+            ?.split(":")?.get(1)?.trim()?.toIntOrNull()
+
+    fun getLongValue(key: String): Long? =
+        primaryCellLines.find { it.startsWith(key, ignoreCase = true) }
+            ?.split(":")?.get(1)?.trim()?.toLongOrNull()
+
+    fun getDoubleValue(key: String): Double? =
+        primaryCellLines.find { it.startsWith(key, ignoreCase = true) }
+            ?.split(":")?.get(1)?.trim()?.toDoubleOrNull()
+
+    val cellId = getIntValue("Cell ID") ?: 0
+    val tacOrLac = getIntValue("TAC") ?: getIntValue("LAC") ?: 0
+    val code = getIntValue("PCI") ?: 0
+    val ulArfcn = getIntValue("EARFCN") ?: 0
+    val dlArfcn = ulArfcn  // Assuming same as UL
+    val band = getIntValue("Band") ?: mapEarFcnToBand(ulArfcn)
+    val ulBw = getDoubleValue("UL_BW") ?: 0.0
+    val dlBw = getDoubleValue("DL_BW") ?: 0.0
+    val plmnId = getIntValue("PLMN") ?: 0
+    val rac = getIntValue("RAC") ?: 0
+    val siteId = getIntValue("SiteId") ?: 0
+    val n = getIntValue("N") ?: 1
+    val s = getIntValue("S") ?: 1
+    val t = getIntValue("T") ?: 1
+    val longCellId = getLongValue("CellId") ?: 0
+
     val signalStrength = extractSignalStrength(snapshot.signalInfo)
     val networkType = extractNetworkType(snapshot.cellInfo)
-    val cellData = parseCellularInfo(snapshot.cellInfo)
 
     val apiRequest = PolarisApiRequest(
         timestamp = snapshot.timestamp,
-        n = cellData.n ?: 1,
-        s = cellData.s ?: 1,
-        t = cellData.t ?: 1,
-        band = cellData.band ?: 3,
-        ulArfcn = cellData.ulArfcn ?: 1800,
-        dlArfcn = cellData.dlArfcn ?: 1800,
-        code = cellData.code ?: 100,
-        ulBw = cellData.ulBw ?: 10.5,
-        dlBw = cellData.dlBw ?: 20.2,
-        plmnId = cellData.plmnId ?: 12345,
-        tacOrLac = cellData.tacOrLac ?: 54321,
-        rac = cellData.rac ?: 1,
-        longCellId = cellData.longCellId ?: 123,
-        siteId = cellData.siteId ?: 456,
-        cellId = cellData.cellId ?: 789,
+        n = n,
+        s = s,
+        t = t,
+        band = band,
+        ulArfcn = ulArfcn,
+        dlArfcn = dlArfcn,
+        code = code,
+        ulBw = ulBw,
+        dlBw = dlBw,
+        plmnId = plmnId,
+        tacOrLac = tacOrLac,
+        rac = rac,
+        longCellId = longCellId,
+        siteId = siteId,
+        cellId = cellId,
         latitude = snapshot.latitude ?: 0.0,
         longitude = snapshot.longitude ?: 0.0,
         signalStrength = signalStrength,
@@ -41,13 +72,24 @@ fun mapSnapshotToApiRequest(snapshot: MonitoringSnapshot): PolarisApiRequest {
         pingTime = 0
     )
 
-    // Log the snapshot and API request as JSON
-    val gson = Gson()
-    Log.d("SnapshotMapping", "Original snapshot: ${gson.toJson(snapshot)}")
-    Log.d("SnapshotMapping", "Mapped API request: ${gson.toJson(apiRequest)}")
+    Log.d("SnapshotMapping", "Original snapshot: ${Gson().toJson(snapshot)}")
+    Log.d("SnapshotMapping", "Mapped API request: ${Gson().toJson(apiRequest)}")
 
     return apiRequest
 }
+
+// Optional helper to map EARFCN to LTE band dynamically if Band key is missing
+fun mapEarFcnToBand(earfcn: Int): Int {
+    return when (earfcn) {
+        in 0..599 -> 1
+        in 600..1199 -> 3
+        in 1200..1949 -> 7
+        in 1950..2399 -> 20
+        in 2400..2649 -> 38
+        else -> 0
+    }
+}
+
 
 private fun extractIntValue(text: String, key: String): Int? {
     return try {
