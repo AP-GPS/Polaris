@@ -14,13 +14,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import com.example.polaris.data.repo.SnapshotRepository
 import com.example.polaris.ui.theme.PolarisTheme
+import com.example.polaris.auth.LoginDialog
+import com.example.polaris.auth.AuthManager
+import com.example.polaris.auth.LoginRequest
 import com.example.polaris.utils.*
+import com.example.polaris.service.BackgroundMonitoringService
+import com.example.polaris.service.ApiService
+import com.example.polaris.service.PolarisApiRequest
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -34,14 +41,70 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            PolarisTheme { Surface(modifier = Modifier.fillMaxSize()) { PolarisHomeScreen() } }
+            PolarisTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    PolarisApp()
+                }
+            }
         }
     }
 }
 
 @Composable
-fun PolarisHomeScreen() {
+fun PolarisApp() {
     val context = LocalContext.current
+    val authManager = remember { AuthManager.getInstance(context) }
+    val authState by authManager.authState.collectAsState()
+    val scope = rememberCoroutineScope()
+
+    // Handle login
+    fun handleLogin(username: String, password: String) {
+        scope.launch {
+            try {
+                authManager.setLoading(true)
+
+                val loginApiService = ApiService.createForLogin()
+                val response = loginApiService.login(LoginRequest(username, password))
+
+                if (response.isSuccessful) {
+                    val loginResponse = response.body()!!
+                    if (loginResponse.token != null) {
+                        authManager.login(loginResponse.token)
+                    } else {
+                        authManager.setError("Invalid response from server")
+                    }
+                } else {
+                    val errorMessage = "Login failed"
+                    authManager.setError(errorMessage)
+                }
+            } catch (e: Exception) {
+                authManager.setError("Network error: ${e.message}")
+            }
+        }
+    }
+
+    if (!authState.isAuthenticated) {
+        LoginDialog(
+            authState = authState,
+            onLogin = { username, password ->
+                handleLogin(username, password)
+            }
+        )
+    } else {
+        PolarisHomeScreen(
+            onLogout = {
+                authManager.logout()
+            }
+        )
+    }
+}
+
+@Composable
+fun PolarisHomeScreen(onLogout: () -> Unit) {
+    val context = LocalContext.current
+    val authManager = remember { AuthManager.getInstance(context) }
+    val currentUser = authManager.getCurrentUser()
+
     var locationText by remember { mutableStateOf("Requesting location...") }
     var isLoading by remember { mutableStateOf(true) }
     var isGpsEnabled by remember { mutableStateOf(isGpsEnabled(context)) }
@@ -58,10 +121,20 @@ fun PolarisHomeScreen() {
     var lastUpdateTime by remember { mutableLongStateOf(0L) }
     var autoSaveSnapshots by remember { mutableStateOf(false) }
 
+    // Background service settings
+    var isBackgroundServiceEnabled by remember { mutableStateOf(false) }
+    var autoUploadSnapshots by remember { mutableStateOf(false) }
+    var apiUrl by remember { mutableStateOf("https://tehran.nazareto.ir") }
+
     // Notification state
     var showNotification by remember { mutableStateOf(false) }
     var notificationMessage by remember { mutableStateOf("") }
     var notificationType by remember { mutableStateOf("success") } // success, error, info
+
+    // Create API service with authentication
+    val apiService = remember(authManager.getToken()) {
+        authManager.getToken()?.let { ApiService.create(it) }
+    }
 
     // Helper function to extract coordinates safely
     fun extractCoordinates(locationText: String): Pair<Double?, Double?> {
@@ -130,8 +203,8 @@ fun PolarisHomeScreen() {
     }
 
     // Function to save snapshot automatically
-    suspend fun saveSnapshot(): Boolean {
-        return if (autoSaveSnapshots && phoneStatePermissionGranted) {
+    suspend fun saveSnapshot(): MonitoringSnapshot? {
+        return if (phoneStatePermissionGranted) {
             try {
                 val coordinates = extractCoordinates(locationText)
                 val snapshot = MonitoringSnapshot(
@@ -141,13 +214,99 @@ fun PolarisHomeScreen() {
                     signalInfo = signalInfoState.value,
                     cellInfo = infoText
                 )
-                repository.insert(snapshot)
-                true
+                if (autoSaveSnapshots) {
+                    repository.insert(snapshot)
+                }
+                snapshot
             } catch (e: Exception) {
-                false
+                null
             }
         } else {
+            null
+        }
+    }
+
+    // Function to upload snapshot to API
+    suspend fun uploadSnapshot(snapshot: MonitoringSnapshot): Boolean {
+        return try {
+            val token = authManager.getToken() ?: return false
+            if (apiService == null) return false
+
+            val apiRequest = mapSnapshotToApiRequest(snapshot)
+            val response = apiService.uploadSnapshot(token, apiRequest)
+
+            if (response.code() == 401) {
+                // Token expired, logout user
+                authManager.logout()
+                return false
+            }
+
+            response.isSuccessful
+        } catch (e: Exception) {
             false
+        }
+    }
+
+    // Function to map snapshot to API request format
+    fun mapSnapshotToApiRequest(snapshot: MonitoringSnapshot): PolarisApiRequest {
+        // Extract signal strength from signal info
+        val signalStrength = extractSignalStrength(snapshot.signalInfo)
+        val networkType = extractNetworkType(snapshot.cellInfo)
+
+        return PolarisApiRequest(
+            timestamp = snapshot.timestamp,
+            n = 1, // Default values - you may want to extract these from cellInfo
+            s = 1,
+            t = 1,
+            band = 3,
+            ulArfcn = 1800,
+            dlArfcn = 1800,
+            code = 100,
+            ulBw = 10.5,
+            dlBw = 20.2,
+            plmnId = 12345,
+            tacOrLac = 54321,
+            rac = 1,
+            longCellId = 123,
+            siteId = 456,
+            cellId = 789,
+            latitude = snapshot.latitude ?: 0.0,
+            longitude = snapshot.longitude ?: 0.0,
+            signalStrength = signalStrength,
+            networkType = networkType,
+            downloadSpeed = 0.0, // These would need to be measured separately
+            uploadSpeed = 0.0,
+            pingTime = 0
+        )
+    }
+
+    fun extractSignalStrength(signalInfo: String): Int {
+        return try {
+            val patterns = listOf(
+                """Signal:\s*(-?\d+)""".toRegex(),
+                """RSRP:\s*(-?\d+)""".toRegex(),
+                """(-?\d+)\s*dBm""".toRegex()
+            )
+
+            for (pattern in patterns) {
+                val match = pattern.find(signalInfo)
+                if (match != null) {
+                    return match.groupValues[1].toInt()
+                }
+            }
+            -70 // Default value
+        } catch (e: Exception) {
+            -70
+        }
+    }
+
+    fun extractNetworkType(cellInfo: String): String {
+        return when {
+            cellInfo.contains("LTE", ignoreCase = true) -> "LTE"
+            cellInfo.contains("5G", ignoreCase = true) -> "5G"
+            cellInfo.contains("GSM", ignoreCase = true) -> "GSM"
+            cellInfo.contains("WCDMA", ignoreCase = true) -> "WCDMA"
+            else -> "UNKNOWN"
         }
     }
 
@@ -180,12 +339,12 @@ fun PolarisHomeScreen() {
         }
     }
 
-    // Periodic updates coroutine
+    // Periodic updates coroutine (for foreground operation)
     LaunchedEffect(isPeriodicUpdatesEnabled, updateInterval) {
-        if (isPeriodicUpdatesEnabled) {
+        if (isPeriodicUpdatesEnabled && !isBackgroundServiceEnabled) {
             showNotificationMessage("Periodic updates started", "success")
-            while (isPeriodicUpdatesEnabled) {
-                delay(updateInterval * 1000L) // Convert seconds to milliseconds
+            while (isPeriodicUpdatesEnabled && !isBackgroundServiceEnabled) {
+                delay(updateInterval * 1000L)
 
                 var updateCount = 0
                 val updateResults = mutableListOf<String>()
@@ -202,21 +361,26 @@ fun PolarisHomeScreen() {
                     updateResults.add("Cellular")
                 }
 
-                // Signal strength is updated automatically via flow
                 updateResults.add("Signal")
                 updateCount++
 
-                // Save snapshot if auto-save is enabled
-                val snapshotSaved = saveSnapshot()
-                if (snapshotSaved) {
+                // Save and upload snapshot
+                val snapshot = saveSnapshot()
+                if (snapshot != null) {
                     updateResults.add("Snapshot")
                     updateCount++
+
+                    if (autoUploadSnapshots) {
+                        val uploadSuccess = uploadSnapshot(snapshot)
+                        if (uploadSuccess) {
+                            updateResults.add("Upload")
+                            updateCount++
+                        }
+                    }
                 }
 
-                // Update last update time
                 lastUpdateTime = System.currentTimeMillis()
 
-                // Show notification
                 val message = if (updateCount > 0) {
                     "Updated: ${updateResults.joinToString(", ")}"
                 } else {
@@ -252,7 +416,42 @@ fun PolarisHomeScreen() {
             // Add top padding
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Periodic Updates Control Panel
+            // User info and logout section
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Welcome",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        if (currentUser?.email != null) {
+                            Text(
+                                text = currentUser.email,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                    TextButton(
+                        onClick = onLogout
+                    ) {
+                        Text("Logout")
+                    }
+                }
+            }
+
+            // Background Service Control Panel
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -264,7 +463,7 @@ fun PolarisHomeScreen() {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Periodic Updates",
+                        text = "Background Service",
                         style = MaterialTheme.typography.titleMedium
                     )
 
@@ -273,10 +472,110 @@ fun PolarisHomeScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Enable Auto Updates")
+                        Text("Enable Background Monitoring")
+                        Switch(
+                            checked = isBackgroundServiceEnabled,
+                            onCheckedChange = { enabled ->
+                                isBackgroundServiceEnabled = enabled
+                                if (enabled) {
+                                    // Stop foreground periodic updates
+                                    isPeriodicUpdatesEnabled = false
+                                    // Start background service
+                                    BackgroundMonitoringService.startMonitoring(
+                                        context = context,
+                                        updateInterval = updateInterval.toLong(),
+                                        autoSave = autoSaveSnapshots,
+                                        autoUpload = autoUploadSnapshots
+                                    )
+                                    showNotificationMessage("Background service started", "success")
+                                } else {
+                                    // Stop background service
+                                    BackgroundMonitoringService.stopMonitoring(context)
+                                    showNotificationMessage("Background service stopped", "info")
+                                }
+                            }
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Auto Upload to API")
+                        Switch(
+                            checked = autoUploadSnapshots,
+                            onCheckedChange = {
+                                autoUploadSnapshots = it
+                                if (isBackgroundServiceEnabled) {
+                                    BackgroundMonitoringService.updateSettings(
+                                        context = context,
+                                        updateInterval = updateInterval.toLong(),
+                                        autoSave = autoSaveSnapshots,
+                                        autoUpload = autoUploadSnapshots
+                                    )
+                                }
+                            }
+                        )
+                    }
+
+//                    OutlinedTextField(
+//                        value = apiUrl,
+//                        onValueChange = { apiUrl = it },
+//                        label = { Text("API Base URL") },
+//                        modifier = Modifier.fillMaxWidth(),
+//                        enabled = !isBackgroundServiceEnabled
+//                    )
+                }
+            }
+
+            // Periodic Updates Control Panel (for foreground operation)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isBackgroundServiceEnabled)
+                        MaterialTheme.colorScheme.surfaceVariant
+                    else
+                        MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Foreground Updates",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (isBackgroundServiceEnabled)
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        else
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+
+                    if (isBackgroundServiceEnabled) {
+                        Text(
+                            text = "Background service is active. Foreground updates are disabled.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Enable Auto Updates",
+                            color = if (isBackgroundServiceEnabled)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                         Switch(
                             checked = isPeriodicUpdatesEnabled,
-                            onCheckedChange = { isPeriodicUpdatesEnabled = it }
+                            onCheckedChange = { isPeriodicUpdatesEnabled = it },
+                            enabled = !isBackgroundServiceEnabled
                         )
                     }
 
@@ -285,10 +584,26 @@ fun PolarisHomeScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Auto Save Snapshots")
+                        Text(
+                            "Auto Save Snapshots",
+                            color = if (isBackgroundServiceEnabled)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                         Switch(
                             checked = autoSaveSnapshots,
-                            onCheckedChange = { autoSaveSnapshots = it }
+                            onCheckedChange = {
+                                autoSaveSnapshots = it
+                                if (isBackgroundServiceEnabled) {
+                                    BackgroundMonitoringService.updateSettings(
+                                        context = context,
+                                        updateInterval = updateInterval.toLong(),
+                                        autoSave = autoSaveSnapshots,
+                                        autoUpload = autoUploadSnapshots
+                                    )
+                                }
+                            }
                         )
                     }
 
@@ -297,21 +612,55 @@ fun PolarisHomeScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Update Interval (seconds)")
+                        Text(
+                            "Update Interval (seconds)",
+                            color = if (isBackgroundServiceEnabled)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Button(
-                                onClick = { if (updateInterval > 10) updateInterval -= 10 },
-                                enabled = !isPeriodicUpdatesEnabled
+                                onClick = {
+                                    if (updateInterval > 10) {
+                                        updateInterval -= 10
+                                        if (isBackgroundServiceEnabled) {
+                                            BackgroundMonitoringService.updateSettings(
+                                                context = context,
+                                                updateInterval = updateInterval.toLong(),
+                                                autoSave = autoSaveSnapshots,
+                                                autoUpload = autoUploadSnapshots
+                                            )
+                                        }
+                                    }
+                                },
+                                enabled = !isPeriodicUpdatesEnabled && !isBackgroundServiceEnabled
                             ) { Text("-") }
 
                             Text(
                                 text = updateInterval.toString(),
-                                modifier = Modifier.padding(horizontal = 16.dp)
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = if (isBackgroundServiceEnabled)
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                else
+                                    MaterialTheme.colorScheme.onPrimaryContainer
                             )
 
                             Button(
-                                onClick = { if (updateInterval < 300) updateInterval += 10 },
-                                enabled = !isPeriodicUpdatesEnabled
+                                onClick = {
+                                    if (updateInterval < 300) {
+                                        updateInterval += 10
+                                        if (isBackgroundServiceEnabled) {
+                                            BackgroundMonitoringService.updateSettings(
+                                                context = context,
+                                                updateInterval = updateInterval.toLong(),
+                                                autoSave = autoSaveSnapshots,
+                                                autoUpload = autoUploadSnapshots
+                                            )
+                                        }
+                                    }
+                                },
+                                enabled = !isPeriodicUpdatesEnabled && !isBackgroundServiceEnabled
                             ) { Text("+") }
                         }
                     }
@@ -320,7 +669,10 @@ fun PolarisHomeScreen() {
                         Text(
                             text = "Last update: ${formatTimestamp(lastUpdateTime)}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                            color = if (isBackgroundServiceEnabled)
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else
+                                MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
@@ -364,7 +716,7 @@ fun PolarisHomeScreen() {
                             isLoading = false
                         }
                     },
-                    enabled = !isLoading && !isPeriodicUpdatesEnabled
+                    enabled = !isLoading && !isPeriodicUpdatesEnabled && !isBackgroundServiceEnabled
                 ) {
                     Text("Manual Refresh")
                 }
@@ -411,7 +763,7 @@ fun PolarisHomeScreen() {
                             )
                         }
                     },
-                    enabled = !isPeriodicUpdatesEnabled
+                    enabled = !isPeriodicUpdatesEnabled && !isBackgroundServiceEnabled
                 ) {
                     Text("Manual Refresh Cellular")
                 }
@@ -438,19 +790,42 @@ fun PolarisHomeScreen() {
                 }
             }
 
-            // Manual Save Snapshot Button
-            Button(
-                onClick = {
-                    scope.launch {
-                        val success = saveSnapshot()
-                        showNotificationMessage(
-                            if (success) "Snapshot saved manually" else "Failed to save snapshot",
-                            if (success) "success" else "error"
-                        )
-                    }
-                }
+            // Manual Save and Upload Buttons
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Save Snapshot Manually")
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val snapshot = saveSnapshot()
+                            showNotificationMessage(
+                                if (snapshot != null) "Snapshot saved manually" else "Failed to save snapshot",
+                                if (snapshot != null) "success" else "error"
+                            )
+                        }
+                    }
+                ) {
+                    Text("Save Snapshot")
+                }
+
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val snapshot = saveSnapshot()
+                            if (snapshot != null) {
+                                val uploadSuccess = uploadSnapshot(snapshot)
+                                showNotificationMessage(
+                                    if (uploadSuccess) "Snapshot uploaded successfully" else "Failed to upload snapshot",
+                                    if (uploadSuccess) "success" else "error"
+                                )
+                            } else {
+                                showNotificationMessage("Failed to create snapshot", "error")
+                            }
+                        }
+                    }
+                ) {
+                    Text("Upload Snapshot")
+                }
             }
 
             HorizontalDivider()
@@ -535,8 +910,6 @@ fun PolarisHomeScreen() {
                 }
             }
 
-            // Add bottom padding for better scrolling
-            Spacer(modifier = Modifier.height(16.dp))
         }
 
         // Notification overlay
